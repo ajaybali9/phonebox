@@ -17,9 +17,9 @@ public sealed record AgentSession(string Id, string Tool, string Name, string Pr
 /// Watches running AI coding sessions (local and read-only):
 ///  - Claude Code: ~/.claude/sessions/{pid}.json (status files written by Claude Code itself)
 ///  - Codex: the latest events in recent rollout files under ~/.codex/sessions
-///  - Cursor: recent agent transcripts under ~/.cursor/projects/*/agent-transcripts (metadata only)
+///  - Cursor (opt-in): recent agent transcripts under ~/.cursor/projects/*/agent-transcripts
 /// </summary>
-public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundService
+public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? config = null) : BackgroundService
 {
     private static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private readonly ConcurrentDictionary<string, string> _codexCwd = new();
@@ -43,7 +43,11 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
             var list = new List<AgentSession>();
             try { list.AddRange(ReadClaude()); } catch (Exception ex) { log.LogDebug("claude sessions: {Msg}", ex.Message); }
             try { list.AddRange(ReadCodex()); } catch (Exception ex) { log.LogDebug("codex sessions: {Msg}", ex.Message); }
-            try { list.AddRange(ReadCursor()); } catch (Exception ex) { log.LogDebug("cursor sessions: {Msg}", ex.Message); }
+            // Cursor sessions are off until Settings › General › Cursor sessions is enabled.
+            if (config?.Get().Cursor.Sessions == true)
+            {
+                try { list.AddRange(ReadCursor()); } catch (Exception ex) { log.LogDebug("cursor sessions: {Msg}", ex.Message); }
+            }
             _sessions = list;
             await Task.Delay(2000, ct);
         }
@@ -261,7 +265,8 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
 
     /// <summary>
     /// Recent Cursor agent chats from ~/.cursor/projects/*/agent-transcripts.
-    /// Only file times and the last message role are read — never prompt or reply text.
+    /// File times and the last JSONL record's role are used for status; message text is not returned.
+    /// Project names come from Cursor workspaceStorage folder URIs (basename only) when available.
     /// </summary>
     internal IEnumerable<AgentSession> ReadCursor(string? projectsRoot = null, string? workspaceStorageRoot = null)
     {
@@ -295,8 +300,10 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
                     : CursorProjectFallback(projectSlug);
                 var age = DateTime.UtcNow - f.LastWriteTimeUtc;
                 var lastRole = ReadCursorLastRole(path);
+                // A recent assistant message means the turn finished (idle). A recent user message means the
+                // agent is still working on a reply (busy). "waiting" is reserved for user attention (Claude).
                 var status = age < TimeSpan.FromMinutes(3)
-                    ? lastRole is "user" ? "waiting" : "busy"
+                    ? lastRole is "assistant" ? "idle" : "busy"
                     : "idle";
                 var shortId = id.Length >= 4 ? id[..4] : id;
                 s = new AgentSession(
@@ -305,7 +312,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
                     Name: $"{project.ToLowerInvariant()}-{shortId}",
                     Project: project,
                     Status: status,
-                    WaitingFor: status == "waiting" ? "agent reply" : null,
+                    WaitingFor: null,
                     Since: new DateTimeOffset(f.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
                     StartedAt: new DateTimeOffset(f.CreationTimeUtc).ToUnixTimeMilliseconds());
             }
@@ -367,32 +374,69 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
         return parts.Length == 0 ? "Cursor" : parts[^1];
     }
 
-    /// <summary>Reads only the role of the last JSONL record; message bodies are ignored.</summary>
+    // Grow the tail until the final JSONL record fits; stay well below loading whole transcripts.
+    private const int CursorRoleInitialBytes = 8192;
+    private const int CursorRoleMaxBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Parses the last JSONL record in a bounded tail window and returns its <c>role</c> only.
+    /// The record may contain message text in memory for parsing; that text is not returned, stored, or sent.
+    /// </summary>
     internal static string? ReadCursorLastRole(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (fs.Length == 0) return null;
-        var take = (int)Math.Min(fs.Length, 8192);
-        fs.Seek(-take, SeekOrigin.End);
-        var buf = new byte[take];
-        var read = fs.Read(buf, 0, buf.Length);
-        var text = Encoding.UTF8.GetString(buf, 0, read);
-        for (var i = text.Length - 1; i >= 0; i--)
+        var len = fs.Length;
+        if (len == 0) return null;
+
+        var take = (int)Math.Min(len, CursorRoleInitialBytes);
+        while (true)
         {
-            if (text[i] != '\n' && i != 0) continue;
-            var start = i == 0 && text[0] != '\n' ? 0 : i + 1;
-            if (start >= text.Length) continue;
-            var end = text.IndexOf('\n', start);
-            var line = (end < 0 ? text[start..] : text[start..end]).Trim();
-            if (line.Length == 0) continue;
-            try
+            fs.Seek(len - take, SeekOrigin.Begin);
+            var buf = new byte[take];
+            var read = fs.Read(buf, 0, buf.Length);
+            if (read <= 0) return null;
+
+            var start = 0;
+            var coversFileStart = take >= len;
+            if (!coversFileStart)
             {
-                using var doc = JsonDocument.Parse(line);
-                return Str(doc.RootElement, "role");
+                // Window begins mid-record: drop the incomplete first line (or grow if there is no newline).
+                var firstNl = Array.IndexOf(buf, (byte)'\n', 0, read);
+                if (firstNl < 0)
+                {
+                    if (take >= len || take >= CursorRoleMaxBytes) return null;
+                    take = (int)Math.Min(len, Math.Min(CursorRoleMaxBytes, (long)take * 2));
+                    continue;
+                }
+                start = firstNl + 1;
             }
-            catch (JsonException) { }
+
+            string? lastRole = null;
+            for (var i = start; i < read;)
+            {
+                var nl = Array.IndexOf(buf, (byte)'\n', i, read - i);
+                var end = nl < 0 ? read : nl;
+                if (end > i)
+                {
+                    try
+                    {
+                        var line = Encoding.UTF8.GetString(buf, i, end - i).Trim();
+                        if (line.Length > 0)
+                        {
+                            using var doc = JsonDocument.Parse(line);
+                            lastRole = Str(doc.RootElement, "role") ?? lastRole;
+                        }
+                    }
+                    catch (JsonException) { }
+                }
+                if (nl < 0) break;
+                i = nl + 1;
+            }
+
+            if (lastRole is not null) return lastRole;
+            if (take >= len || take >= CursorRoleMaxBytes) return null;
+            take = (int)Math.Min(len, Math.Min(CursorRoleMaxBytes, (long)take * 2));
         }
-        return null;
     }
 
     /// <summary>Claude Code writes its process' start time (a FILETIME) into the session file; another process with the same PID started later.</summary>

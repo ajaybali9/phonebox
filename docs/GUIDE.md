@@ -272,8 +272,9 @@ switchable ports). The panel keeps running over Wi-Fi while the USB power is off
   longer after errors and as long as a `429` asks for, across restarts too. An expired or refused token is not sent:
   PhoneBox waits until Claude Code renews it.
 - **Codex quota and sessions** are read from local files in `~/.codex/sessions`; Claude Code sessions from
-  `~/.claude/sessions`. Cursor sessions come from recent agent transcripts under `~/.cursor/projects/*/agent-transcripts`
-  (file times and the last message role only — never chat text).
+  `~/.claude/sessions`. Cursor sessions (opt-in in **Settings › General › Cursor sessions**) come from recent agent
+  transcripts under `~/.cursor/projects/*/agent-transcripts`. Only the last message's role is kept; chat text is never
+  shown, stored or sent. Project names use the folder basename from Cursor's `workspaceStorage`.
 - **Native Antigravity quota:** the agent reads the running Antigravity server's port and CSRF token from its
   process arguments and queries its loopback quota/status API, or invokes the signed-in CLI's structured usage
   command. Only measured quota fields reach the panel; CLI conversation identifiers and token counters are omitted.

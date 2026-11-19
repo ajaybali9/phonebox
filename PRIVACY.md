@@ -23,11 +23,16 @@ Last updated: 2026-11-15 (PhoneBox 0.9.6).
   `VIBRATE`, and for the microphone (`RECORD_AUDIO`) only when a Dictation widget's button is tapped for the first time.
 - **Computer data shown on the panel** (CPU, GPU, memory, disks, processes, media, volume, AI coding sessions and
   quotas, Docker / Podman, OBS) is read locally and goes only to your phone: over the USB cable (`adb reverse` to
-  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. Cursor sessions use only
-  transcript file times and the last message role under `~/.cursor/projects` (never chat text). On Linux, an Intel GPU's
+  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. On Linux, an Intel GPU's
   load comes from the GPU usage counters in other processes' `/proc/<pid>/fdinfo` (the counters only, nothing those
   programs draw or compute); processes of other users are read only when Linux allows the agent to read them (normally
   as root or with `CAP_SYS_PTRACE`).
+- **Cursor sessions** (off by default; **Settings › General › Cursor sessions**): while enabled, the agent scans recent
+  `*.jsonl` files under `~/.cursor/projects/*/agent-transcripts` (about every 30 seconds for discovery) and reads a
+  bounded tail of each file to parse the last record's `role` in memory. Only that role and the file times are kept for
+  the panel; chat text is never shown, stored or sent. Project labels use the folder basename from Cursor's
+  `workspaceStorage/*/workspace.json` `folder` URI (cached about a minute), sent to the phone as the session's project
+  name over the same local USB / paired Wi-Fi link as other panel data. Turning the setting off stops the scan.
 - **Sound for the Spectrum bars widget** (Windows): while an enabled page with the widget is on the phone's screen,
   the agent captures what the default output device plays, analyzes it in memory and sends only 48 loudness levels
   per frame to the phone. Audio is never stored or sent; capture stops a few seconds after the widget leaves the
