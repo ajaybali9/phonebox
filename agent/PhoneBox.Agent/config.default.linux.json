@@ -14,6 +14,8 @@
   "ping": { "host": "1.1.1.1", "adapters": [] },
   // Discord widget: talks to the Discord desktop app on this computer. Create an application at discord.com/developers/applications, add the redirect http://127.0.0.1, and enter its client ID and secret (see docs/DISCORD.md)
   "discord": { "enabled": false, "clientId": null, "clientSecret": null },
+  // Cursor agent chats on the AI sessions widget (off by default)
+  "cursor": { "sessions": false },
   // App console widget (Windows): keys and dial bindings per app, matched by the focused window's process name
   "console": { "profiles": [] },
 

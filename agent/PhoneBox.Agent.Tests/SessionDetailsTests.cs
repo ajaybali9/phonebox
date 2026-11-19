@@ -240,5 +240,12 @@ public sealed class SessionDetailsTests : IDisposable
     public void Cursor_ProjectFallback_UsesLastSlugSegment(string slug, string expected)
         => Assert.Equal(expected, SessionMonitor.CursorProjectFallback(slug));
 
+    [Theory]
+    [InlineData("/Users/test/Projects/phonebox", "Users-test-Projects-phonebox")]
+    [InlineData("C:/Users/test/Projects/phonebox-agent", "C-Users-test-Projects-phonebox-agent")]
+    [InlineData(@"C:\Users\test\Projects\phonebox-agent", "C-Users-test-Projects-phonebox-agent")]
+    public void Cursor_ProjectSlug_StripsDriveColon(string path, string expected)
+        => Assert.Equal(expected, SessionMonitor.CursorProjectSlug(path));
+
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

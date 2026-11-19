@@ -352,7 +352,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
                         var local = uri.IsFile ? uri.LocalPath : folder;
                         if (string.IsNullOrEmpty(local)) continue;
                         var trimmed = local.Replace('\\', '/').TrimEnd('/');
-                        var slug = trimmed.TrimStart('/').Replace('/', '-');
+                        var slug = CursorProjectSlug(trimmed);
                         if (slug.Length == 0) continue;
                         map[slug] = Path.GetFileName(trimmed.TrimEnd('/'));
                     }
@@ -364,6 +364,14 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
         _cursorProjectNames = map;
         _nextCursorProjectMap = Environment.TickCount64 + 60_000;
         return map;
+    }
+
+    /// <summary>Slug for a workspace folder path; matches Cursor's projects directory name (no drive colon).</summary>
+    internal static string CursorProjectSlug(string localPath)
+    {
+        var trimmed = localPath.Replace('\\', '/').TrimEnd('/');
+        // Windows: "C:/Users/…" → "C-Users-…" so the key matches the projects folder name (':' is illegal in dir names).
+        return trimmed.TrimStart('/').Replace('/', '-').Replace(":", "", StringComparison.Ordinal);
     }
 
     internal static string CursorProjectFallback(string projectSlug)
