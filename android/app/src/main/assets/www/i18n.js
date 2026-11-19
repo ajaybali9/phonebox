@@ -6038,6 +6038,8 @@
       'Codex': 'Codex',
       'CodexBar': 'CodexBar',
       'Antigravity': 'Antigravity',
+      'Cursor': 'Cursor',
+      'Grok': 'Grok',
       'EUR': 'EUR',
       'GBP': 'GBP',
       'USD': 'USD',
