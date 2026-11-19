@@ -1417,8 +1417,32 @@ function optionField(w, o, onValChange) {
         return h('label', { class: 'check', style: { marginBottom: '10px' } }, h('input', { type: 'checkbox', checked: haFlag ? w.options?.control === true : v !== false,
           onchange: (e) => { set(o.key, e.target.checked); if (haFlag) renderInspector(); } }), o.label);
       }
-    case 'select':
-      return field(h('select', { onchange: (e) => set(o.key, e.target.value) }, ...o.choices.map(([k, l]) => h('option', { value: k, selected: k === v }, l))));
+    case 'select': {
+      const select = h('select', { onchange: (e) => set(o.key, e.target.value) });
+      const fill = (choices) => {
+        const selected = optVal(w, o);
+        const seen = new Set(choices.map((c) => c[0]));
+        const list = [...choices];
+        if (selected && !seen.has(selected)) list.push([selected, selected]);
+        select.replaceChildren(...list.map(([k, l]) => h('option', { value: k, selected: k === selected }, l)));
+      };
+      fill([...(o.choices || [])]);
+      // Quota ring: offer every provider CodexBar / local quotas currently report.
+      if (o.key === 'provider' && w.type === 'quotaring') {
+        fetch('/api/quotas').then((r) => r.ok ? r.json() : null).then((data) => {
+          const seen = new Set((o.choices || []).map((c) => c[0]));
+          const merged = [...(o.choices || [])];
+          for (const p of (data?.providers || [])) {
+            if (p?.id && !seen.has(p.id)) {
+              seen.add(p.id);
+              merged.push([p.id, p.name || p.id]);
+            }
+          }
+          fill(merged);
+        }).catch(() => {});
+      }
+      return field(select);
+    }
     case 'multi': {
       // read the stored value on every change: the inspector is not rebuilt between two ticks
       const cur = () => { const x = optVal(w, o); return Array.isArray(x) ? x : []; };

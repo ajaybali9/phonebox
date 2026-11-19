@@ -9,6 +9,8 @@
   [Prajjwal2404](https://github.com/Prajjwal2404)).
 - Weather: Settings › General › Weather has a temperature unit, Celsius or Fahrenheit, for the clock's weather line
   and the Forecast widget (#256, [haydn9000](https://github.com/haydn9000)).
+- Quota ring: provider list includes Cursor and Grok (Grok uses its own mark), and offers every provider currently
+  reported by CodexBar ([ajaybali9](https://github.com/ajaybali9)).
 
 **Panel**
 - Clock widget: a new option chooses which AI quota providers its status line shows; clocks saved before it show
