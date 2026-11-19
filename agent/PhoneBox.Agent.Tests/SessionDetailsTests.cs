@@ -247,5 +247,31 @@ public sealed class SessionDetailsTests : IDisposable
     public void Cursor_ProjectSlug_StripsDriveColon(string path, string expected)
         => Assert.Equal(expected, SessionMonitor.CursorProjectSlug(path));
 
+    [Fact]
+    public void Cursor_UnchangedTranscript_ReusesCachedLastRole()
+    {
+        var monitor = new SessionMonitor(NullLogger<SessionMonitor>.Instance);
+        var id = "33333333-4444-5555-6666-777777777777";
+        var dir = Path.Combine(_root, "projects", "cache-app", "agent-transcripts", id);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, id + ".jsonl");
+        File.WriteAllText(file, """{"role":"user","message":"go"}""" + "\n");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(-15));
+
+        var projects = Path.Combine(_root, "projects");
+        Assert.Equal("busy", Assert.Single(monitor.ReadCursor(projects)).Status);
+        var fi = new FileInfo(file);
+        Assert.True(monitor.HasCachedCursorRole(file, fi.LastWriteTimeUtc, fi.Length));
+
+        // Unchanged file: cache still matches; status stays busy without needing a re-read of the body.
+        Assert.Equal("busy", Assert.Single(monitor.ReadCursor(projects)).Status);
+        Assert.True(monitor.HasCachedCursorRole(file, fi.LastWriteTimeUtc, fi.Length));
+
+        File.AppendAllText(file, """{"role":"assistant","message":"done"}""" + "\n");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(-5));
+        Assert.Equal("idle", Assert.Single(monitor.ReadCursor(projects)).Status);
+        fi.Refresh();
+        Assert.True(monitor.HasCachedCursorRole(file, fi.LastWriteTimeUtc, fi.Length));
+    }
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

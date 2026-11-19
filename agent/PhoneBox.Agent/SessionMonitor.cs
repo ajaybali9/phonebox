@@ -31,6 +31,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
     private string? _cursorDiscoveryRoot;
     private long _nextCursorDiscovery;
     private string[] _cursorCandidateFiles = [];
+    private readonly ConcurrentDictionary<string, (DateTime LastWrite, long Length, string? Role)> _cursorRoles = new();
     private Dictionary<string, string>? _cursorProjectNames;
     private long _nextCursorProjectMap;
 
@@ -285,6 +286,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
         }
 
         var names = CursorProjectNames(workspaceStorageRoot);
+        var active = new HashSet<string>(StringComparer.Ordinal);
         foreach (var path in _cursorCandidateFiles)
         {
             AgentSession? s = null;
@@ -292,6 +294,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
             {
                 var f = new FileInfo(path);
                 if (!f.Exists || f.LastWriteTimeUtc <= cutoff) continue;
+                active.Add(f.FullName);
                 var id = f.Directory?.Name ?? Path.GetFileNameWithoutExtension(f.Name);
                 if (string.IsNullOrWhiteSpace(id)) continue;
                 var projectSlug = f.Directory?.Parent?.Parent?.Name ?? "";
@@ -299,7 +302,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
                     ? mapped
                     : CursorProjectFallback(projectSlug);
                 var age = DateTime.UtcNow - f.LastWriteTimeUtc;
-                var lastRole = ReadCursorLastRole(path);
+                var lastRole = CursorLastRoleCached(f);
                 // A recent assistant message means the turn finished (idle). A recent user message means the
                 // agent is still working on a reply (busy). "waiting" is reserved for user attention (Claude).
                 var status = age < TimeSpan.FromMinutes(3)
@@ -319,7 +322,24 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log, ConfigStore? con
             catch { }
             if (s is not null) yield return s;
         }
+        foreach (var old in _cursorRoles.Keys.Where(p => !active.Contains(p)))
+            _cursorRoles.TryRemove(old, out _);
     }
+
+    /// <summary>Reuse the last-role parse while the transcript file is unchanged (same write time and length).</summary>
+    private string? CursorLastRoleCached(FileInfo f)
+    {
+        if (_cursorRoles.TryGetValue(f.FullName, out var cached)
+            && cached.LastWrite == f.LastWriteTimeUtc && cached.Length == f.Length)
+            return cached.Role;
+        var role = ReadCursorLastRole(f.FullName);
+        _cursorRoles[f.FullName] = (f.LastWriteTimeUtc, f.Length, role);
+        return role;
+    }
+
+    /// <summary>True when the role cache holds this path at the given write time and length (for tests).</summary>
+    internal bool HasCachedCursorRole(string path, DateTime lastWriteUtc, long length) =>
+        _cursorRoles.TryGetValue(path, out var cached) && cached.LastWrite == lastWriteUtc && cached.Length == length;
 
     /// <summary>Maps Cursor project-directory slugs to workspace folder names via workspaceStorage.</summary>
     private Dictionary<string, string> CursorProjectNames(string? workspaceStorageRoot)
