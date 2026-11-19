@@ -210,6 +210,7 @@ public sealed class SessionDetailsTests : IDisposable
             """{"role":"user","message":""" + "\"" + huge + "\"}\n");
         File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(-20));
 
+        Assert.Equal("user", SessionMonitor.ReadCursorLastRole(file));
         var s = Assert.Single(monitor.ReadCursor(Path.Combine(_root, "projects")));
         Assert.Equal("busy", s.Status);
         Assert.Null(s.WaitingFor);
