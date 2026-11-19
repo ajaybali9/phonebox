@@ -23,7 +23,8 @@ Last updated: 2026-11-15 (PhoneBox 0.9.6).
   `VIBRATE`, and for the microphone (`RECORD_AUDIO`) only when a Dictation widget's button is tapped for the first time.
 - **Computer data shown on the panel** (CPU, GPU, memory, disks, processes, media, volume, AI coding sessions and
   quotas, Docker / Podman, OBS) is read locally and goes only to your phone: over the USB cable (`adb reverse` to
-  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. On Linux, an Intel GPU's
+  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. Cursor sessions use only
+  transcript file times and the last message role under `~/.cursor/projects` (never chat text). On Linux, an Intel GPU's
   load comes from the GPU usage counters in other processes' `/proc/<pid>/fdinfo` (the counters only, nothing those
   programs draw or compute); processes of other users are read only when Linux allows the agent to read them (normally
   as root or with `CAP_SYS_PTRACE`).

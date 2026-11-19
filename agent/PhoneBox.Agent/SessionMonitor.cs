@@ -17,6 +17,7 @@ public sealed record AgentSession(string Id, string Tool, string Name, string Pr
 /// Watches running AI coding sessions (local and read-only):
 ///  - Claude Code: ~/.claude/sessions/{pid}.json (status files written by Claude Code itself)
 ///  - Codex: the latest events in recent rollout files under ~/.codex/sessions
+///  - Cursor: recent agent transcripts under ~/.cursor/projects/*/agent-transcripts (metadata only)
 /// </summary>
 public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundService
 {
@@ -27,6 +28,11 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
     private string? _discoveryRoot;
     private long _nextDiscovery;
     private string[] _candidateFiles = [];
+    private string? _cursorDiscoveryRoot;
+    private long _nextCursorDiscovery;
+    private string[] _cursorCandidateFiles = [];
+    private Dictionary<string, string>? _cursorProjectNames;
+    private long _nextCursorProjectMap;
 
     public IReadOnlyList<AgentSession> Snapshot() => _sessions;
 
@@ -37,6 +43,7 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
             var list = new List<AgentSession>();
             try { list.AddRange(ReadClaude()); } catch (Exception ex) { log.LogDebug("claude sessions: {Msg}", ex.Message); }
             try { list.AddRange(ReadCodex()); } catch (Exception ex) { log.LogDebug("codex sessions: {Msg}", ex.Message); }
+            try { list.AddRange(ReadCursor()); } catch (Exception ex) { log.LogDebug("cursor sessions: {Msg}", ex.Message); }
             _sessions = list;
             await Task.Delay(2000, ct);
         }
@@ -250,6 +257,142 @@ public sealed class SessionMonitor(ILogger<SessionMonitor> log) : BackgroundServ
         }
         return new CodexDetails(model, effort, totalTokens, inputTokens, outputTokens, cachedInputTokens,
             reasoningTokens, lastInputTokens, contextWindow, lastActivityAt, turnStartedAt, lifecycle, lastTool, start + complete);
+    }
+
+    /// <summary>
+    /// Recent Cursor agent chats from ~/.cursor/projects/*/agent-transcripts.
+    /// Only file times and the last message role are read — never prompt or reply text.
+    /// </summary>
+    internal IEnumerable<AgentSession> ReadCursor(string? projectsRoot = null, string? workspaceStorageRoot = null)
+    {
+        var root = projectsRoot ?? Path.Combine(Home, ".cursor", "projects");
+        if (!Directory.Exists(root)) yield break;
+        var cutoff = DateTime.UtcNow.AddHours(-3);
+        if (_cursorDiscoveryRoot != root || Environment.TickCount64 >= _nextCursorDiscovery)
+        {
+            _cursorCandidateFiles = new DirectoryInfo(root).EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
+                .Where(f => f.LastWriteTimeUtc > cutoff
+                    && f.Directory?.Parent?.Name.Equals("agent-transcripts", StringComparison.OrdinalIgnoreCase) == true
+                    && !f.FullName.Replace('\\', '/').Contains("/.agent-data-cleanup-", StringComparison.OrdinalIgnoreCase))
+                .Select(f => f.FullName).ToArray();
+            _cursorDiscoveryRoot = root;
+            _nextCursorDiscovery = Environment.TickCount64 + 30_000;
+        }
+
+        var names = CursorProjectNames(workspaceStorageRoot);
+        foreach (var path in _cursorCandidateFiles)
+        {
+            AgentSession? s = null;
+            try
+            {
+                var f = new FileInfo(path);
+                if (!f.Exists || f.LastWriteTimeUtc <= cutoff) continue;
+                var id = f.Directory?.Name ?? Path.GetFileNameWithoutExtension(f.Name);
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                var projectSlug = f.Directory?.Parent?.Parent?.Name ?? "";
+                var project = names.TryGetValue(projectSlug, out var mapped) && !string.IsNullOrEmpty(mapped)
+                    ? mapped
+                    : CursorProjectFallback(projectSlug);
+                var age = DateTime.UtcNow - f.LastWriteTimeUtc;
+                var lastRole = ReadCursorLastRole(path);
+                var status = age < TimeSpan.FromMinutes(3)
+                    ? lastRole is "user" ? "waiting" : "busy"
+                    : "idle";
+                var shortId = id.Length >= 4 ? id[..4] : id;
+                s = new AgentSession(
+                    Id: "cursor:" + id,
+                    Tool: "cursor",
+                    Name: $"{project.ToLowerInvariant()}-{shortId}",
+                    Project: project,
+                    Status: status,
+                    WaitingFor: status == "waiting" ? "agent reply" : null,
+                    Since: new DateTimeOffset(f.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+                    StartedAt: new DateTimeOffset(f.CreationTimeUtc).ToUnixTimeMilliseconds());
+            }
+            catch { }
+            if (s is not null) yield return s;
+        }
+    }
+
+    /// <summary>Maps Cursor project-directory slugs to workspace folder names via workspaceStorage.</summary>
+    private Dictionary<string, string> CursorProjectNames(string? workspaceStorageRoot)
+    {
+        if (_cursorProjectNames is not null && Environment.TickCount64 < _nextCursorProjectMap)
+            return _cursorProjectNames;
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var root = workspaceStorageRoot ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Cursor", "User", "workspaceStorage");
+            // On macOS Application Support is SpecialFolder.UserProfile/Library/Application Support, not ApplicationData.
+            if (!Directory.Exists(root) && OperatingSystem.IsMacOS())
+                root = Path.Combine(Home, "Library", "Application Support", "Cursor", "User", "workspaceStorage");
+            if (Directory.Exists(root))
+            {
+                foreach (var dir in Directory.EnumerateDirectories(root))
+                {
+                    var file = Path.Combine(dir, "workspace.json");
+                    if (!File.Exists(file)) continue;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(file));
+                        if (!doc.RootElement.TryGetProperty("folder", out var folderEl)
+                            || folderEl.ValueKind != JsonValueKind.String
+                            || folderEl.GetString() is not { Length: > 0 } folder)
+                            continue;
+                        if (!Uri.TryCreate(folder, UriKind.Absolute, out var uri)) continue;
+                        var local = uri.IsFile ? uri.LocalPath : folder;
+                        if (string.IsNullOrEmpty(local)) continue;
+                        var trimmed = local.Replace('\\', '/').TrimEnd('/');
+                        var slug = trimmed.TrimStart('/').Replace('/', '-');
+                        if (slug.Length == 0) continue;
+                        map[slug] = Path.GetFileName(trimmed.TrimEnd('/'));
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+        _cursorProjectNames = map;
+        _nextCursorProjectMap = Environment.TickCount64 + 60_000;
+        return map;
+    }
+
+    internal static string CursorProjectFallback(string projectSlug)
+    {
+        if (string.IsNullOrWhiteSpace(projectSlug)) return "Cursor";
+        if (projectSlug.All(char.IsDigit)) return "Cursor";
+        var parts = projectSlug.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 0 ? "Cursor" : parts[^1];
+    }
+
+    /// <summary>Reads only the role of the last JSONL record; message bodies are ignored.</summary>
+    internal static string? ReadCursorLastRole(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (fs.Length == 0) return null;
+        var take = (int)Math.Min(fs.Length, 8192);
+        fs.Seek(-take, SeekOrigin.End);
+        var buf = new byte[take];
+        var read = fs.Read(buf, 0, buf.Length);
+        var text = Encoding.UTF8.GetString(buf, 0, read);
+        for (var i = text.Length - 1; i >= 0; i--)
+        {
+            if (text[i] != '\n' && i != 0) continue;
+            var start = i == 0 && text[0] != '\n' ? 0 : i + 1;
+            if (start >= text.Length) continue;
+            var end = text.IndexOf('\n', start);
+            var line = (end < 0 ? text[start..] : text[start..end]).Trim();
+            if (line.Length == 0) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                return Str(doc.RootElement, "role");
+            }
+            catch (JsonException) { }
+        }
+        return null;
     }
 
     /// <summary>Claude Code writes its process' start time (a FILETIME) into the session file; another process with the same PID started later.</summary>

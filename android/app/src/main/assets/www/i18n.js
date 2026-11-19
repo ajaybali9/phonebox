@@ -201,7 +201,7 @@
       'w.processes': 'Processes',
       'w.memory': 'Memory',
       'w.noOpenSessions': 'No open sessions',
-      'w.noAiSessions': 'No Claude Code / Codex sessions open',
+      'w.noAiSessions': 'No Claude Code / Codex / Cursor sessions open',
       'w.note.cancel': 'Cancel',
       'w.note.save': 'Save',
       'w.note.failed': 'Could not save',
