@@ -18,13 +18,13 @@ public static class UnixProc
         "PhoneBoxAgent", "adb", "dotnet",
     };
 
-    private record PsRow(uint Uid, string Path, string Args);
+    private record PsRow(uint Uid, string Path, string Args, long RssKb);
     private static Dictionary<int, PsRow> _ps = [];
     private static long _psAt;
     private static readonly object PsLock = new();
 
-    /// <summary>macOS: owner, executable and arguments of every process from two <c>ps</c> calls, cached for two seconds
-    /// (one <c>ps</c> per process takes seconds with a few hundred processes).</summary>
+    /// <summary>macOS: owner, executable, RSS (KiB) and arguments of every process from two <c>ps</c> calls, cached for
+    /// two seconds (one <c>ps</c> per process takes seconds with a few hundred processes).</summary>
     private static Dictionary<int, PsRow> Ps()
     {
         lock (PsLock)
@@ -37,16 +37,58 @@ public static class UnixProc
                 var t = line.Trim(); var i = t.IndexOf(' ');
                 if (i > 0 && int.TryParse(t[..i], out var pid)) args[pid] = t[(i + 1)..].Trim();
             }
-            foreach (var line in (Sh.Run("ps", "-axww", "-o", "pid=,uid=,comm=") ?? "").Split('\n'))
+            // rss is KiB; .NET WorkingSet64 is often 0 for kernel_task / WindowServer / launchd.
+            foreach (var line in (Sh.Run("ps", "-axww", "-o", "pid=,uid=,rss=,comm=") ?? "").Split('\n'))
             {
-                var f = line.Trim().Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-                if (f.Length == 3 && int.TryParse(f[0], out var pid) && uint.TryParse(f[1], out var uid))
-                    map[pid] = new PsRow(uid, f[2].Trim(), args.GetValueOrDefault(pid, ""));
+                var f = line.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
+                if (f.Length == 4 && int.TryParse(f[0], out var pid) && uint.TryParse(f[1], out var uid)
+                    && long.TryParse(f[2], out var rssKb))
+                    map[pid] = new PsRow(uid, f[3].Trim(), args.GetValueOrDefault(pid, ""), Math.Max(0, rssKb));
             }
             _ps = map;
             _psAt = Environment.TickCount64;
             return map;
         }
+    }
+
+    /// <summary>macOS RSS from <c>ps</c> in bytes; 0 when unknown. Used when <c>Process.WorkingSet64</c> is unreadable.</summary>
+    public static long RssBytes(int pid) =>
+        OperatingSystem.IsMacOS() && Ps().TryGetValue(pid, out var row) ? row.RssKb * 1024 : 0;
+
+    /// <summary>macOS <c>ps</c> command name for a PID (e.g. kernel_task for PID 0, where <c>Process.ProcessName</c> is empty).</summary>
+    public static string? Comm(int pid) =>
+        OperatingSystem.IsMacOS() && Ps().TryGetValue(pid, out var row) && row.Path.Length > 0 ? Path.GetFileName(row.Path) : null;
+
+    /// <summary>
+    /// Wired memory from <c>vm_stat</c> (bytes). <c>ps</c> and <c>Process.WorkingSet64</c> omit PID 0; Activity Monitor's
+    /// kernel_task figure is largely this wired total.
+    /// </summary>
+    public static long KernelWiredBytes()
+    {
+        if (!OperatingSystem.IsMacOS()) return 0;
+        try
+        {
+            var text = Sh.Run("vm_stat") ?? "";
+            var pageSize = 4096L;
+            foreach (var line in text.Split('\n'))
+            {
+                // "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+                const string pagePrefix = "page size of ";
+                var p = line.IndexOf(pagePrefix, StringComparison.Ordinal);
+                if (p >= 0)
+                {
+                    var n = line[(p + pagePrefix.Length)..];
+                    var end = n.IndexOf(' ');
+                    if (end > 0 && long.TryParse(n.AsSpan(0, end), out var ps) && ps > 0) pageSize = ps;
+                }
+                const string wiredPrefix = "Pages wired down:";
+                if (!line.StartsWith(wiredPrefix, StringComparison.Ordinal)) continue;
+                var digits = line[wiredPrefix.Length..].Trim().TrimEnd('.');
+                if (long.TryParse(digits, out var pages) && pages > 0) return pages * pageSize;
+            }
+        }
+        catch { }
+        return 0;
     }
 
     /// <summary>True if the process belongs to the user running the agent (only those may be ended).</summary>
