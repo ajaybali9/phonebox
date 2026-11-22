@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Microsoft.Extensions.Logging.Abstractions;
 using PhoneBox.Agent;
@@ -64,14 +65,32 @@ public sealed class ProcessMonitorTests
     public void MacOsWindowServerHasPositiveMemoryWhenRunning()
     {
         if (!OperatingSystem.IsMacOS()) return;
+        // Skip only when the OS process is absent; a missing snapshot entry while it runs is a failure.
+        if (!WindowServerIsRunning()) return;
 
         var mon = NewMonitor();
         SampleTwice(mon);
-        var windowServer = mon.Snapshot()
-            .FirstOrDefault(g => g.Name.Equals("WindowServer", StringComparison.Ordinal));
-        if (windowServer is null) return; // headless / no GUI session
-
+        var windowServer = Assert.Single(mon.Snapshot(),
+            g => g.Name.Equals("WindowServer", StringComparison.Ordinal));
         Assert.True(windowServer.MemMb > 0);
+    }
+
+    /// <summary>True when a live process is WindowServer by .NET name or <c>ps</c> comm — not via Snapshot().</summary>
+    private static bool WindowServerIsRunning()
+    {
+        foreach (var p in Process.GetProcesses())
+        {
+            using (p)
+            {
+                try
+                {
+                    if (p.ProcessName.Equals("WindowServer", StringComparison.OrdinalIgnoreCase)) return true;
+                    if ((UnixProc.Comm(p.Id) ?? "").Equals("WindowServer", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                catch { }
+            }
+        }
+        return false;
     }
 
     [Fact]
