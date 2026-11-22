@@ -270,7 +270,13 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
         {
             using (p)
             {
-                if (p.Id == 0 || p.Id == _selfPid || Protected.Contains(name) || !Mine(p)) { failed++; continue; }
+#if !WINDOWS
+                var resolved = MacDisplayName(p) ?? "";
+#else
+                var resolved = p.ProcessName;
+#endif
+                // Check the resolved process name (not the request spelling) so case variants cannot bypass Protected.
+                if (p.Id == 0 || p.Id == _selfPid || Protected.Contains(resolved) || !Mine(p)) { failed++; continue; }
                 try { p.Kill(); killed++; }
                 catch { failed++; }
             }

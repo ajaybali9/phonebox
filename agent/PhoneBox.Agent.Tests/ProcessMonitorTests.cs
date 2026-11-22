@@ -30,6 +30,11 @@ public sealed class ProcessMonitorTests
         Assert.Equal(0, byName.Killed);
         Assert.Contains("protected", byName.Error, StringComparison.OrdinalIgnoreCase);
 
+        // Request spelling must not bypass Ordinal protected entries (e.g. "Finder").
+        byName = mon.Kill("finder");
+        Assert.Equal(0, byName.Killed);
+        Assert.Contains("protected", byName.Error, StringComparison.OrdinalIgnoreCase);
+
         var byPid = mon.KillPid(0);
         Assert.Equal(0, byPid.Killed);
         Assert.Contains("protected", byPid.Error, StringComparison.OrdinalIgnoreCase);

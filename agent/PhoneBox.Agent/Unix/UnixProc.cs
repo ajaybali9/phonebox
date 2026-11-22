@@ -5,7 +5,8 @@ namespace PhoneBox.Agent;
 /// <summary>Process details on Linux (/proc) and macOS (ps): executable, arguments, owner, a friendly name and an icon.</summary>
 public static class UnixProc
 {
-    public static readonly HashSet<string> Protected = new(StringComparer.Ordinal)
+    // OrdinalIgnoreCase: Kill("finder") must match "Finder" the same way the process list locks it.
+    public static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         // Linux
         "systemd", "init", "kthreadd", "Xorg", "Xwayland", "gnome-shell", "gnome-session-binary", "plasmashell", "kwin_x11", "kwin_wayland",
