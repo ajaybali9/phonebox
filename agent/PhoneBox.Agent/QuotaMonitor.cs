@@ -372,19 +372,14 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
                 try
                 {
                     if (path is null)
-                    {
                         _external = _external.Select(p => p with { Error = "CodexBar is not installed" }).ToList();
-                        _nextCodexBar = Environment.TickCount64 + 180_000;
-                    }
                     else
                     {
                         var latest = await CodexBar.ReadAsync(path, ct);
-                        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        // Retry sooner when any provider reported an error (even with limits); Merge still keeps last-good for the ring.
-                        var failed = latest.Any(p => p.Error is not null);
-                        _external = CodexBar.Merge(_external, latest, nowMs);
-                        _nextCodexBar = Environment.TickCount64 + (failed ? 45_000 : 180_000);
+                        _external = CodexBar.Merge(_external, latest, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     }
+                    // Keep the usual 3-minute interval even when Cursor fails persistently under launchd (avoids hammering Claude's rate-limited usage endpoint).
+                    _nextCodexBar = Environment.TickCount64 + 180_000;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
                 catch (Exception ex)
@@ -392,7 +387,7 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
                     log.LogDebug("CodexBar: {Message}", ex.Message);
                     // Do not wipe last-good limits — only mark an error when there is nothing to show.
                     _external = _external.Select(p => p.Limits.Count > 0 ? p : p with { Error = "CodexBar refresh failed" }).ToList();
-                    _nextCodexBar = Environment.TickCount64 + 45_000;
+                    _nextCodexBar = Environment.TickCount64 + 60_000;
                 }
             }
             CodexTick();
@@ -406,7 +401,7 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
             try { await ClaudeTickAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception ex) { log.LogWarning("claude quota: {Msg}", ex.Message); } // never end the loop for Codex and Antigravity
-            // Cap at the CodexBar retry deadline so a 45s failure backoff is not stretched by a full 30s sleep twice.
+            // Cap at the remaining CodexBar deadline so a wake/reset is not followed by a full 30s sleep.
             var wait = TimeSpan.FromSeconds(30);
             var untilCodex = _nextCodexBar - Environment.TickCount64;
             if (untilCodex >= 0 && untilCodex < wait.TotalMilliseconds)

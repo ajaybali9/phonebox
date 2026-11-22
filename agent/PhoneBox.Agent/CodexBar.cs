@@ -298,6 +298,19 @@ internal static class CodexBar
     internal const long FreshExternalMs = 600_000;
 
     /// <summary>
+    /// A prior healthy CodexBar reading that may still be shown: within <see cref="LastGoodHoldMs"/>, with any
+    /// window whose <see cref="QuotaLimit.ResetsAt"/> has passed removed (a 5-hour session from 6 hours ago must not linger).
+    /// </summary>
+    internal static QuotaProvider? HeldReading(QuotaProvider? previous, long now)
+    {
+        if (previous is not { Error: null, Limits.Count: > 0, UpdatedAt: { } at }) return null;
+        if (now - at > LastGoodHoldMs) return null;
+        var limits = previous.Limits.Where(l => l.ResetsAt is not { } r || r > now).ToList();
+        if (limits.Count == 0) return null;
+        return limits.Count == previous.Limits.Count ? previous : previous with { Limits = limits };
+    }
+
+    /// <summary>
     /// Merges a CodexBar poll into the previous snapshot. A failed or empty provider keeps the last
     /// good limits (without the error) so Cursor / Grok rings do not go blank on a transient session miss.
     /// </summary>
@@ -313,9 +326,9 @@ internal static class CodexBar
                 continue;
             }
             // Only promote a prior reading that was itself healthy — never clear an error that arrived with limits.
-            if (old is { Error: null, Limits.Count: > 0, UpdatedAt: { } at } && now - at <= LastGoodHoldMs)
+            if (HeldReading(old, now) is { } held)
             {
-                list.Add(old);
+                list.Add(held);
                 continue;
             }
             list.Add(p.Limits.Count == 0 && old is not null
@@ -335,8 +348,8 @@ internal static class CodexBar
             return external with { Codex = local?.Codex };
         if (local is { Error: null, Limits.Count: > 0 }) return local;
         // Cursor / Grok have no local reader: keep the last good CodexBar reading across transient session failures.
-        if (external is { Error: null, Limits.Count: > 0, UpdatedAt: { } held } && now - held <= LastGoodHoldMs)
-            return external with { Codex = local?.Codex };
+        if (HeldReading(external, now) is { } held)
+            return held with { Codex = local?.Codex };
         if (external is not null) return external with { Error = external.Error ?? "CodexBar data is stale", Codex = local?.Codex };
         return local;
     }

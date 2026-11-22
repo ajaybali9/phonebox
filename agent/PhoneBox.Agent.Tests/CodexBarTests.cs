@@ -71,6 +71,37 @@ public sealed class CodexBarTests
     }
 
     [Fact]
+    public void HeldReadingDropsExpiredSessionLimitButKeepsWeekly()
+    {
+        const long now = 10_000_000L;
+        var prior = new QuotaProvider("cursor", "Cursor", "Pro",
+        [
+            new("5-hour session", 80, now - 1, 300 * 60, "warning"),
+            new("Weekly", 42, now + 7 * 24 * 3600_000L, 10080 * 60, "normal"),
+        ], null, now - CodexBar.FreshExternalMs - 1, null, Source: "codexbar");
+        var failed = Assert.Single(CodexBar.Parse("""[{"provider":"cursor","error":{"message":"No Cursor session found."}}]"""));
+
+        var merged = Assert.Single(CodexBar.Merge([prior], [failed], now));
+        var weekly = Assert.Single(merged.Limits);
+        Assert.Equal("Weekly", weekly.Label);
+        Assert.Equal(42, weekly.Percent);
+        Assert.Null(merged.Error);
+
+        var selected = CodexBar.Select(null, merged, now);
+        Assert.NotNull(selected);
+        Assert.Null(selected.Error);
+        Assert.Equal(42, Assert.Single(selected.Limits).Percent);
+
+        // When every window has already reset, there is nothing left to hold.
+        var allExpired = prior with
+        {
+            Limits = [new("5-hour session", 80, now - 1, 300 * 60, "warning")],
+        };
+        Assert.Null(CodexBar.HeldReading(allExpired, now));
+        Assert.NotNull(Assert.Single(CodexBar.Merge([allExpired], [failed], now)).Error);
+    }
+
+    [Fact]
     public void InvalidRootIsAnError() => Assert.Throws<System.Text.Json.JsonException>(() => CodexBar.Parse("{}"));
 
     [Fact]
