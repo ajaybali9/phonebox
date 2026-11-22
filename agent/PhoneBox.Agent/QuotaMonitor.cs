@@ -406,7 +406,12 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
             try { await ClaudeTickAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception ex) { log.LogWarning("claude quota: {Msg}", ex.Message); } // never end the loop for Codex and Antigravity
-            await Wake.Delay(TimeSpan.FromSeconds(30), ct);
+            // Cap at the CodexBar retry deadline so a 45s failure backoff is not stretched by a full 30s sleep twice.
+            var wait = TimeSpan.FromSeconds(30);
+            var untilCodex = _nextCodexBar - Environment.TickCount64;
+            if (untilCodex >= 0 && untilCodex < wait.TotalMilliseconds)
+                wait = TimeSpan.FromMilliseconds(untilCodex);
+            await Wake.Delay(wait, ct);
         }
     }
 
