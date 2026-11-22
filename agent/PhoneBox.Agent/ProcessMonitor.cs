@@ -294,7 +294,11 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
         catch { return new(0, 0, "process not found"); }
         using (p)
         {
+#if !WINDOWS
+            var name = MacDisplayName(p) ?? "";
+#else
             var name = p.ProcessName;
+#endif
             if (Protected.Contains(name)) return new(0, 0, $"{name} is protected and cannot be terminated");
             if (!Mine(p)) return new(0, 0, "process belongs to another session or user");
             var descendants = Descendants(pid);
@@ -306,7 +310,12 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
                 try
                 {
                     using var c = Process.GetProcessById(d);
-                    if (d == _selfPid || Protected.Contains(c.ProcessName) || !Mine(c)) { skipped++; continue; }
+#if !WINDOWS
+                    var childName = MacDisplayName(c) ?? "";
+#else
+                    var childName = c.ProcessName;
+#endif
+                    if (d == _selfPid || Protected.Contains(childName) || !Mine(c)) { skipped++; continue; }
                     c.Kill();
                     killed++;
                 }
