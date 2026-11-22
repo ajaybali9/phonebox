@@ -91,7 +91,8 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
         }
     }
 
-    private void Sample()
+    /// <summary>For tests and the sampling loop. On macOS includes PID 0 (<c>kernel_task</c>); elsewhere PID 0 is skipped.</summary>
+    internal void Sample()
     {
         var now = Stopwatch.GetTimestamp();
         var elapsed = _lastTs == 0 ? 0 : (now - _lastTs) / (double)Stopwatch.Frequency;
@@ -108,6 +109,8 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
             {
                 try
                 {
+                    // Windows Idle / Unix schedulers use PID 0 with a real name; only macOS needs PID 0 listed (kernel_task).
+                    if (p.Id == 0 && !OperatingSystem.IsMacOS()) continue;
 #if !WINDOWS
                     var name = MacDisplayName(p);
 #else
@@ -293,7 +296,7 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
     /// </summary>
     public KillResult KillPid(int pid)
     {
-        if (pid == 0) return new(0, 0, "kernel_task is protected and cannot be terminated");
+        if (pid == 0) return new(0, 0, "PID 0 is protected and cannot be terminated");
         if (pid == _selfPid) return new(0, 0, "that is the PhoneBox agent itself");
         Process p;
         try { p = Process.GetProcessById(pid); }

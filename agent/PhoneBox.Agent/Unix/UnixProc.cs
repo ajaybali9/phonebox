@@ -89,36 +89,47 @@ public static class UnixProc
     public static string? Comm(int pid) =>
         OperatingSystem.IsMacOS() && Ps().TryGetValue(pid, out var row) && row.Comm.Length > 0 ? row.Comm : null;
 
+    private static long _wiredBytes;
+    private static long _wiredAt = -10_000;
+    private static readonly object WiredLock = new();
+
     /// <summary>
-    /// Wired memory from <c>vm_stat</c> (bytes). <c>ps</c> and <c>Process.WorkingSet64</c> omit PID 0; Activity Monitor's
-    /// kernel_task figure is largely this wired total.
+    /// Wired memory from <c>vm_stat</c> (bytes), cached for two seconds like <see cref="Ps"/>. <c>ps</c> and
+    /// <c>Process.WorkingSet64</c> omit PID 0; Activity Monitor's kernel_task figure is largely this wired total.
     /// </summary>
     public static long KernelWiredBytes()
     {
         if (!OperatingSystem.IsMacOS()) return 0;
-        try
+        lock (WiredLock)
         {
-            var text = Sh.Run("vm_stat") ?? "";
-            var pageSize = 4096L;
-            foreach (var line in text.Split('\n'))
+            if (Environment.TickCount64 - _wiredAt < 2000) return _wiredBytes;
+            long bytes = 0;
+            try
             {
-                // "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
-                const string pagePrefix = "page size of ";
-                var p = line.IndexOf(pagePrefix, StringComparison.Ordinal);
-                if (p >= 0)
+                var text = Sh.Run("vm_stat") ?? "";
+                var pageSize = 4096L;
+                foreach (var line in text.Split('\n'))
                 {
-                    var n = line[(p + pagePrefix.Length)..];
-                    var end = n.IndexOf(' ');
-                    if (end > 0 && long.TryParse(n.AsSpan(0, end), out var ps) && ps > 0) pageSize = ps;
+                    // "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+                    const string pagePrefix = "page size of ";
+                    var p = line.IndexOf(pagePrefix, StringComparison.Ordinal);
+                    if (p >= 0)
+                    {
+                        var n = line[(p + pagePrefix.Length)..];
+                        var end = n.IndexOf(' ');
+                        if (end > 0 && long.TryParse(n.AsSpan(0, end), out var ps) && ps > 0) pageSize = ps;
+                    }
+                    const string wiredPrefix = "Pages wired down:";
+                    if (!line.StartsWith(wiredPrefix, StringComparison.Ordinal)) continue;
+                    var digits = line[wiredPrefix.Length..].Trim().TrimEnd('.');
+                    if (long.TryParse(digits, out var pages) && pages > 0) { bytes = pages * pageSize; break; }
                 }
-                const string wiredPrefix = "Pages wired down:";
-                if (!line.StartsWith(wiredPrefix, StringComparison.Ordinal)) continue;
-                var digits = line[wiredPrefix.Length..].Trim().TrimEnd('.');
-                if (long.TryParse(digits, out var pages) && pages > 0) return pages * pageSize;
             }
+            catch { }
+            _wiredBytes = bytes;
+            _wiredAt = Environment.TickCount64;
+            return _wiredBytes;
         }
-        catch { }
-        return 0;
     }
 
     /// <summary>True if the process belongs to the user running the agent (only those may be ended).</summary>

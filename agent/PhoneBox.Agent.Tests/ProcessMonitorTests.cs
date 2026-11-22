@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using Microsoft.Extensions.Logging.Abstractions;
 using PhoneBox.Agent;
 using Xunit;
@@ -11,9 +10,8 @@ public sealed class ProcessMonitorTests
 
     private static void SampleTwice(ProcessMonitor mon)
     {
-        var sample = typeof(ProcessMonitor).GetMethod("Sample", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        sample.Invoke(mon, null);
-        sample.Invoke(mon, null);
+        mon.Sample();
+        mon.Sample();
     }
 
     [Fact]
@@ -39,6 +37,7 @@ public sealed class ProcessMonitorTests
         var byPid = mon.KillPid(0);
         Assert.Equal(0, byPid.Killed);
         Assert.Contains("protected", byPid.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PID 0", byPid.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -98,5 +97,16 @@ public sealed class ProcessMonitorTests
     {
         if (!OperatingSystem.IsMacOS()) return;
         Assert.True(UnixProc.KernelWiredBytes() > 0);
+    }
+
+    [Fact]
+    public void NonMacOsDoesNotListPid0InSnapshot()
+    {
+        if (OperatingSystem.IsMacOS()) return;
+
+        var mon = NewMonitor();
+        SampleTwice(mon);
+        Assert.DoesNotContain(mon.Snapshot(), g => g.Name.Equals("Idle", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(mon.Snapshot(), g => g.Name.Equals("kernel_task", StringComparison.OrdinalIgnoreCase));
     }
 }

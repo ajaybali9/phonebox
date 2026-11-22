@@ -3,9 +3,6 @@
 ## Unreleased
 
 **Agent**
-- macOS Top processes / Processes: `kernel_task` (PID 0) and other system processes with an empty .NET process name
-  show in the CPU and memory lists again, with memory from `ps` RSS or wired pages when `WorkingSet64` is 0. They stay
-  locked so they cannot be ended from the phone (#388, [ajaybali9](https://github.com/ajaybali9)).
 - Phone app updates: a phone that cannot take a streamed install (`splice failed: EINVAL`, seen with Android 15 on a
   3.10 kernel) is tried once more without streaming, and a phone whose app was updated another way no longer keeps
   "Update available" on until the agent restarts (#353, [MU74NTLabs](https://github.com/MU74NTLabs)).
