@@ -357,29 +357,42 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
     private async Task RunUsageLoopAsync(CancellationToken ct)
     {
         LoadClaudeCache(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var wakes = Wake.Count;
         while (!ct.IsCancellationRequested)
         {
+            // /api/refresh (Wake.Now) must re-poll CodexBar; otherwise Cursor stays on a stale "No session" for up to 3 minutes.
+            if (Wake.Count != wakes)
+            {
+                wakes = Wake.Count;
+                _nextCodexBar = 0;
+            }
             if (Environment.TickCount64 >= _nextCodexBar)
             {
                 var path = ToolProcess.Find("codexbar");
                 try
                 {
-                    if (path is null) _external = _external.Select(p => p with { Error = "CodexBar is not installed" }).ToList();
+                    if (path is null)
+                    {
+                        _external = _external.Select(p => p with { Error = "CodexBar is not installed" }).ToList();
+                        _nextCodexBar = Environment.TickCount64 + 180_000;
+                    }
                     else
                     {
                         var latest = await CodexBar.ReadAsync(path, ct);
-                        _external = latest.Select(p => p.Limits.Count == 0 && _external.FirstOrDefault(old => old.Id == p.Id) is { } cached
-                            ? cached with { Error = p.Error ?? "CodexBar returned no data" } : p)
-                            .Concat(_external.Where(old => !latest.Any(p => p.Id == old.Id)).Select(p => p with { Limits = [], Error = "CodexBar omitted this provider" })).ToList();
+                        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        // Retry sooner when CodexBar itself failed a provider (e.g. Cursor session); Merge still keeps last-good for the ring.
+                        var failed = latest.Any(p => p.Error is not null && p.Limits.Count == 0);
+                        _external = CodexBar.Merge(_external, latest, nowMs);
+                        _nextCodexBar = Environment.TickCount64 + (failed ? 45_000 : 180_000);
                     }
-                    _nextCodexBar = Environment.TickCount64 + 180_000;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
                 catch (Exception ex)
                 {
                     log.LogDebug("CodexBar: {Message}", ex.Message);
-                    _external = _external.Select(p => p with { Error = "CodexBar refresh failed" }).ToList();
-                    _nextCodexBar = Environment.TickCount64 + 60_000;
+                    // Do not wipe last-good limits — only mark an error when there is nothing to show.
+                    _external = _external.Select(p => p.Limits.Count > 0 ? p : p with { Error = "CodexBar refresh failed" }).ToList();
+                    _nextCodexBar = Environment.TickCount64 + 45_000;
                 }
             }
             CodexTick();

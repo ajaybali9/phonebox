@@ -46,6 +46,23 @@ public sealed class CodexBarTests
     }
 
     [Fact]
+    public void MergeKeepsLastGoodLimitsWhenCodexBarReportsNoSession()
+    {
+        var good = Assert.Single(CodexBar.Parse("""
+            [{"provider":"cursor","usage":{"loginMethod":"Pro","primary":{"usedPercent":42,"windowMinutes":10080},"updatedAt":"2026-01-01T00:00:00Z"}}]
+            """));
+        Assert.Null(good.Error);
+        Assert.NotEmpty(good.Limits);
+        var failed = Assert.Single(CodexBar.Parse("""[{"provider":"cursor","error":{"message":"No Cursor session found."}}]"""));
+        var now = good.UpdatedAt ?? 1;
+        var merged = Assert.Single(CodexBar.Merge([good], [failed], now));
+        Assert.Null(merged.Error);
+        Assert.Equal(42, merged.Limits[0].Percent);
+        // Still shown for Cursor (no local reader) within the hold window.
+        Assert.Equal(42, CodexBar.Select(null, merged, now + CodexBar.FreshExternalMs + 1)!.Limits[0].Percent);
+    }
+
+    [Fact]
     public void InvalidRootIsAnError() => Assert.Throws<System.Text.Json.JsonException>(() => CodexBar.Parse("{}"));
 
     [Fact]
