@@ -19,7 +19,7 @@ public static class UnixProc
         "PhoneBoxAgent", "adb", "dotnet",
     };
 
-    private record PsRow(uint Uid, string Path, string Args, long RssKb);
+    private record PsRow(uint Uid, string Path, string Comm, string Args, long RssKb);
     private static Dictionary<int, PsRow> _ps = [];
     private static long _psAt;
     private static readonly object PsLock = new();
@@ -41,15 +41,44 @@ public static class UnixProc
             // rss is KiB; .NET WorkingSet64 is often 0 for kernel_task / WindowServer / launchd.
             foreach (var line in (Sh.Run("ps", "-axww", "-o", "pid=,uid=,rss=,comm=") ?? "").Split('\n'))
             {
-                var f = line.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
-                if (f.Length == 4 && int.TryParse(f[0], out var pid) && uint.TryParse(f[1], out var uid)
-                    && long.TryParse(f[2], out var rssKb))
-                    map[pid] = new PsRow(uid, f[3].Trim(), args.GetValueOrDefault(pid, ""), Math.Max(0, rssKb));
+                if (ParsePsCommLine(line) is not { } row) continue;
+                map[row.Pid] = new PsRow(row.Uid, row.Path, row.Comm, args.GetValueOrDefault(row.Pid, ""), row.RssKb);
             }
             _ps = map;
             _psAt = Environment.TickCount64;
             return map;
         }
+    }
+
+    /// <summary>
+    /// Parses one <c>ps -o pid=,uid=,rss=,comm=</c> line. Parenthesized <c>comm</c> values such as
+    /// <c>(WindowServer)</c> become the bare name for grouping/Protected checks; only values that look like
+    /// filesystem paths are kept as <see cref="PsRow.Path"/> for icons and titles.
+    /// </summary>
+    internal static (int Pid, uint Uid, long RssKb, string Path, string Comm)? ParsePsCommLine(string line)
+    {
+        var f = line.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
+        if (f.Length != 4 || !int.TryParse(f[0], out var pid) || !uint.TryParse(f[1], out var uid)
+            || !long.TryParse(f[2], out var rssKb))
+            return null;
+        var (path, comm) = SplitPsComm(f[3]);
+        return (pid, uid, Math.Max(0, rssKb), path, comm);
+    }
+
+    /// <summary>
+    /// Splits a raw <c>ps</c> <c>comm</c> field into an executable path (when present) and a canonical process name.
+    /// BSD <c>ps</c> may report a discarded image name as <c>(WindowServer)</c>; that is a name, not a path.
+    /// </summary>
+    internal static (string Path, string Comm) SplitPsComm(string raw)
+    {
+        raw = raw.Trim();
+        if (raw.Length == 0) return ("", "");
+        if (raw.Contains('/'))
+            return (raw, Path.GetFileName(raw));
+        // Entire field wrapped in parentheses: bare command name, not a filesystem path.
+        if (raw.Length >= 3 && raw[0] == '(' && raw[^1] == ')')
+            raw = raw[1..^1].Trim();
+        return ("", raw);
     }
 
     /// <summary>macOS RSS from <c>ps</c> in bytes; 0 when unknown. Used when <c>Process.WorkingSet64</c> is unreadable.</summary>
@@ -58,7 +87,7 @@ public static class UnixProc
 
     /// <summary>macOS <c>ps</c> command name for a PID (e.g. kernel_task for PID 0, where <c>Process.ProcessName</c> is empty).</summary>
     public static string? Comm(int pid) =>
-        OperatingSystem.IsMacOS() && Ps().TryGetValue(pid, out var row) && row.Path.Length > 0 ? Path.GetFileName(row.Path) : null;
+        OperatingSystem.IsMacOS() && Ps().TryGetValue(pid, out var row) && row.Comm.Length > 0 ? row.Comm : null;
 
     /// <summary>
     /// Wired memory from <c>vm_stat</c> (bytes). <c>ps</c> and <c>Process.WorkingSet64</c> omit PID 0; Activity Monitor's
