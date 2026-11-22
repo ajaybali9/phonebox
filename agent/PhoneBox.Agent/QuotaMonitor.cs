@@ -360,6 +360,8 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
         var wakes = Wake.Count;
         while (!ct.IsCancellationRequested)
         {
+            // Capture before the poll so a /api/refresh during CodexBar/Claude work still ends the wait below.
+            var wake = Wake.Pending;
             // /api/refresh (Wake.Now) must re-poll CodexBar; otherwise Cursor stays on a stale "No session" for up to 3 minutes.
             if (Wake.Count != wakes)
             {
@@ -401,12 +403,10 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
             try { await ClaudeTickAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception ex) { log.LogWarning("claude quota: {Msg}", ex.Message); } // never end the loop for Codex and Antigravity
-            // Cap at the remaining CodexBar deadline so a wake/reset is not followed by a full 30s sleep.
-            var wait = TimeSpan.FromSeconds(30);
-            var untilCodex = _nextCodexBar - Environment.TickCount64;
-            if (untilCodex >= 0 && untilCodex < wait.TotalMilliseconds)
-                wait = TimeSpan.FromMilliseconds(untilCodex);
-            await Wake.Delay(wait, ct);
+            // Zero when the CodexBar deadline has already passed (do not sleep another 30 s); otherwise min(30 s, remaining).
+            var untilCodex = Math.Max(0L, _nextCodexBar - Environment.TickCount64);
+            var wait = TimeSpan.FromMilliseconds(Math.Min(30_000L, untilCodex));
+            await Wake.Delay(wait, ct, wake);
         }
     }
 
