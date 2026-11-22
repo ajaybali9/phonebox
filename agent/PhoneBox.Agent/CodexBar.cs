@@ -312,9 +312,10 @@ internal static class CodexBar
                 list.Add(p);
                 continue;
             }
-            if (old is { Limits.Count: > 0, UpdatedAt: { } at } && now - at <= LastGoodHoldMs)
+            // Only promote a prior reading that was itself healthy — never clear an error that arrived with limits.
+            if (old is { Error: null, Limits.Count: > 0, UpdatedAt: { } at } && now - at <= LastGoodHoldMs)
             {
-                list.Add(old with { Error = null });
+                list.Add(old);
                 continue;
             }
             list.Add(p.Limits.Count == 0 && old is not null

@@ -380,8 +380,8 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
                     {
                         var latest = await CodexBar.ReadAsync(path, ct);
                         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        // Retry sooner when CodexBar itself failed a provider (e.g. Cursor session); Merge still keeps last-good for the ring.
-                        var failed = latest.Any(p => p.Error is not null && p.Limits.Count == 0);
+                        // Retry sooner when any provider reported an error (even with limits); Merge still keeps last-good for the ring.
+                        var failed = latest.Any(p => p.Error is not null);
                         _external = CodexBar.Merge(_external, latest, nowMs);
                         _nextCodexBar = Environment.TickCount64 + (failed ? 45_000 : 180_000);
                     }

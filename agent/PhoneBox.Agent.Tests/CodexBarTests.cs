@@ -58,8 +58,16 @@ public sealed class CodexBarTests
         var merged = Assert.Single(CodexBar.Merge([good], [failed], now));
         Assert.Null(merged.Error);
         Assert.Equal(42, merged.Limits[0].Percent);
-        // Still shown for Cursor (no local reader) within the hold window.
-        Assert.Equal(42, CodexBar.Select(null, merged, now + CodexBar.FreshExternalMs + 1)!.Limits[0].Percent);
+        // Still shown for Cursor (no local reader) within the hold window — must stay error-free (not the stale fallback).
+        var held = CodexBar.Select(null, merged, now + CodexBar.FreshExternalMs + 1);
+        Assert.NotNull(held);
+        Assert.Null(held.Error);
+        Assert.Equal(42, held.Limits[0].Percent);
+
+        // A prior reading that already had an error is not promoted to healthy.
+        var tainted = good with { Error = "No Cursor session found." };
+        var afterTainted = Assert.Single(CodexBar.Merge([tainted], [failed], now));
+        Assert.NotNull(afterTainted.Error);
     }
 
     [Fact]
