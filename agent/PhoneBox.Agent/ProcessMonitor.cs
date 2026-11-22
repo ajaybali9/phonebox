@@ -265,11 +265,12 @@ public sealed class ProcessMonitor(ILogger<ProcessMonitor> log, SessionMonitor s
         if (Protected.Contains(name)) return new(0, 0, $"{name} is protected and cannot be terminated");
 
         int killed = 0, failed = 0;
-        foreach (var p in Process.GetProcessesByName(name))
+        // Same recovered-name match as the process list / Detail, so every listed instance is considered.
+        foreach (var p in ProcessesNamed(name))
         {
             using (p)
             {
-                if (p.Id == _selfPid || !Mine(p)) { failed++; continue; }
+                if (p.Id == 0 || p.Id == _selfPid || Protected.Contains(name) || !Mine(p)) { failed++; continue; }
                 try { p.Kill(); killed++; }
                 catch { failed++; }
             }

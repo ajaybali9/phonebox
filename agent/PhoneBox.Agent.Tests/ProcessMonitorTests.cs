@@ -46,7 +46,6 @@ public sealed class ProcessMonitorTests
         var kernel = Assert.Single(groups, g => g.Name.Equals("kernel_task", StringComparison.Ordinal));
         Assert.True(kernel.Locked);
         Assert.True(kernel.MemMb > 0); // wired memory via vm_stat
-        Assert.Contains(groups, g => g.Name.Equals("WindowServer", StringComparison.Ordinal) && g.MemMb > 0);
 
         // GetProcessesByName("kernel_task") misses PID 0 when ProcessName is empty; Detail must still resolve it.
         var detail = mon.Detail("kernel_task");
@@ -54,6 +53,20 @@ public sealed class ProcessMonitorTests
         Assert.True(instance.Locked);
         Assert.True(instance.MemMb > 0);
         Assert.True(detail.Locked);
+    }
+
+    [Fact]
+    public void MacOsWindowServerHasPositiveMemoryWhenRunning()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        var mon = NewMonitor();
+        SampleTwice(mon);
+        var windowServer = mon.Snapshot()
+            .FirstOrDefault(g => g.Name.Equals("WindowServer", StringComparison.Ordinal));
+        if (windowServer is null) return; // headless / no GUI session
+
+        Assert.True(windowServer.MemMb > 0);
     }
 
     [Fact]
